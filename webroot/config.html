@@ -69,16 +69,6 @@
             });
         }
         window.save = save;
-
-        function restart() {
-            exec("zapret stop").then(({ stdout }) => {
-                toast(stdout);
-            });
-            exec("zapret start").then(({ stdout }) => {
-                toast(stdout);
-            });
-        }
-        window.restart = restart;
     </script>
 </head>
 
@@ -109,10 +99,6 @@
                 <button onclick="undo()">
                     <i>undo</i>
                     <span class="translate" id="cancel">Отменить</span>
-                </button>
-                <button onclick="restart()">
-                    <i>replay</i>
-                    <span class="translate" id="restart_zapret">Перезапустить zapret</span>
                 </button>
             </div>
         </div>

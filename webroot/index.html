@@ -32,48 +32,40 @@
             user-select: none;
             font-family: "Google Sans";
         }
+        
+        /* Clean minimalist styling matching other pages */
+        .status-container {
+            text-align: center;
+            padding: 40px 0;
+        }
+        .status-icon {
+            font-size: 64px;
+            margin-bottom: 16px;
+        }
     </style>
     <script type="module">
         import { exec, toast } from '/kernelsu.js';
 
+        // Check Status
         exec("zapret status").then(({ stdout }) => {
             if (stdout.includes("is running")) {
                 main_status.innerText = t('zapret_working');
-                main_icon.innerText = 'stop'
-                main_note.innerText = t('stop');
+                main_icon.innerText = 'check_circle';
+                main_icon.style.color = '#4caf50'; // Green
             } else {
                 main_status.innerText = t('not_working');
-                main_icon.innerText = 'play_arrow'
-                main_note.innerText = t('start');
+                main_icon.innerText = 'error_outline';
+                main_icon.style.color = '#f44336'; // Red
             }
         });
+
+        // Check Autostart
         exec('[ -f "/data/adb/zapret/autostart" ] && echo "true" || echo "false"').then(({ stdout }) => {
             const isEnabled = stdout.trim() === 'true';
             autostart_checkbox.checked = isEnabled;
             autostart_note.innerText = isEnabled ? t('is_on') : t('is_off');
         });
-        function start_stop() {
-            if (main_note.innerText == t('stop')) {
-                exec("zapret stop").then(({ stdout }) => {
-                    toast(stdout);
-                    if (stdout.includes("stopped")) {
-                        main_status.innerText = t('not_working');
-                        main_icon.innerText = 'play_arrow'
-                        main_note.innerText = t('start');
-                    }
-                });
-            } else {
-                exec("zapret start").then(({ stdout }) => {
-                    toast(stdout);
-                    if (stdout.includes("started")) {
-                        main_status.innerText = t('zapret_working');
-                        main_icon.innerText = 'stop'
-                        main_note.innerText = t('stop');
-                    }
-                });
-            }
-        }
-        window.start_stop = start_stop;
+
         function manage_autostart(state) {
             if (state) {
                 exec("zapret autostart-on").then(({ stdout }) => {
@@ -105,25 +97,38 @@
         <a href="check.html"><i>check</i><span class="translate" id="check">Проверка</span></a>
     </nav>
     <main class="responsive">
-        <div style="text-align: center;">
-        <h1 id="main_status">...</h1>
-        <button onclick="start_stop()">
-            <i id="main_icon"></i>
-            <span id="main_note">...</span>
-        </button>
-        <div class="field middle-align">
-            <nav>
-                <div class="max">
-                    <h6 class="translate" id="autostart">Автозапуск</h6>
-                    <div id="autostart_note"></div>
-                </div>
-                <label class="switch">
-                    <input type="checkbox" id="autostart_checkbox" onchange="manage_autostart(this.checked)">
-                    <span></span>
-                </label>
-            </nav>
+        
+        <!-- Big centered status -->
+        <div class="status-container">
+            <i id="main_icon" class="status-icon">hourglass_empty</i>
+            <h5 id="main_status">...</h5>
         </div>
+
+        <div class="large-space"></div>
+
+        <!-- Settings List Style -->
+        <div class="row middle-align">
+            <i class="primary-text">restart_alt</i>
+            <div class="max">
+                <h6 class="translate" id="autostart">Автозапуск</h6>
+                <p id="autostart_note" class="small-text">...</p>
+            </div>
+            <label class="switch">
+                <input type="checkbox" id="autostart_checkbox" onchange="manage_autostart(this.checked)">
+                <span></span>
+            </label>
         </div>
+
+        <div class="divider"></div>
+
+        <div class="row middle-align">
+            <i class="error-text">bolt</i>
+            <div class="max">
+                <h6>Управление</h6>
+                <p class="small-text">Используйте кнопку Action в меню модулей</p>
+            </div>
+        </div>
+
     </main>
     <script>
         if (!navigator.language.startsWith('ru')) {
