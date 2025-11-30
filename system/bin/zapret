@@ -1,83 +1,239 @@
 #!/system/bin/sh
 
-pidof "nfqws" > /dev/null && echo "zapret is running" || echo "zapret is not running"
+# Zapret Magisk Module Control Script
+# Refactored for stability and safety
 
-if [ "$1" == "start" ]; then
-    check_iptables_support() {
-        if iptables -t mangle -A POSTROUTING -p tcp -m connbytes --connbytes-dir=original --connbytes-mode=packets --connbytes 1:12 -j ACCEPT 2>/dev/null; then
-            iptables -t mangle -D POSTROUTING -p tcp -m connbytes --connbytes-dir=original --connbytes-mode=packets --connbytes 1:12 -j ACCEPT 2>/dev/null
-            echo "2"
-        else
-            echo "3"
-        fi
-    }
-    use_iptables=$(check_iptables_support)
+# Configuration
+ZAPRET_BASE="/data/adb/zapret"
+CONFIG="$ZAPRET_BASE/config.txt"
+AUTOHOSTS="$ZAPRET_BASE/autohosts.txt"
+IGNORE="$ZAPRET_BASE/ignore.txt"
 
-    echo "Starting zapret...";
+# Logging helper
+log() {
+    echo "$1"
+}
 
-    args=""
+# Check iptables capabilities
+check_iptables_support() {
+    if iptables -t mangle -A POSTROUTING -p tcp -m connbytes --connbytes-dir=original --connbytes-mode=packets --connbytes 1:12 -j ACCEPT 2>/dev/null; then
+        iptables -t mangle -D POSTROUTING -p tcp -m connbytes --connbytes-dir=original --connbytes-mode=packets --connbytes 1:12 -j ACCEPT 2>/dev/null
+        echo "2" # Full support
+    else
+        echo "3" # Limited support
+    fi
+}
 
-    while IFS= read -r line; do
-        line="${line//\{hosts\}/"/data/adb/zapret/autohosts.txt"}"
-        line="${line//\{ignore\}/"/data/adb/zapret/ignore.txt"}"
-        line="${line//\{youtube\}/"/etc/youtube.txt"}"
-        line="${line//\{quicgoogle\}/"/etc/quic_initial_www_google_com.bin"}"
-        line="${line//\{tlsgoogle\}/"/etc/tls_clienthello_www_google_com.bin"}"
-        line="$(echo "$line" | sed -E 's/--wf-(tcp|udp)=[^ ]+//g')"
-        line="$(echo "$line" | sed -E 's/  +/ /g' | sed -E 's/^ //;s/ $//')"
-        args+=" $line"
-    done < /data/adb/zapret/config.txt
+# Manage Custom Chains
+ensure_chains() {
+    # Create chains if they don't exist
+    iptables -t mangle -N ZAPRET_POST 2>/dev/null
+    iptables -t mangle -N ZAPRET_PRE 2>/dev/null
+    ip6tables -t mangle -N ZAPRET_POST 2>/dev/null
+    ip6tables -t mangle -N ZAPRET_PRE 2>/dev/null
 
-    sysctl net.netfilter.nf_conntrack_tcp_be_liberal=1 > /dev/null;
-    cbOrig="-m connbytes --connbytes-dir=original --connbytes-mode=packets --connbytes 1:12 -m mark ! --mark 0x40000000/0x40000000";
-    cbReply="-m connbytes --connbytes-dir=reply --connbytes-mode=packets --connbytes 1:6 -m mark ! --mark 0x40000000/0x40000000";
+    # Flush them to be sure they are empty before adding new rules
+    iptables -t mangle -F ZAPRET_POST
+    iptables -t mangle -F ZAPRET_PRE
+    ip6tables -t mangle -F ZAPRET_POST
+    ip6tables -t mangle -F ZAPRET_PRE
 
-    iptAdd() {
-        if [[ "$use_iptables" == "3" ]]; then cbOrig=""; cbReply=""; fi;
-        iptDPort="--dport $2"; iptSPort="--sport $2";
-        iptables -t mangle -I POSTROUTING -p $1 $iptDPort $cbOrig -j NFQUEUE --queue-num 200 --queue-bypass;
-        iptables -t mangle -I PREROUTING -p $1 $iptSPort $cbReply -j NFQUEUE --queue-num 200 --queue-bypass;
-        ip6tables -t mangle -I POSTROUTING -p $1 $iptDPort $cbOrig -j NFQUEUE --queue-num 200 --queue-bypass;
-        ip6tables -t mangle -I PREROUTING -p $1 $iptSPort $cbReply -j NFQUEUE --queue-num 200 --queue-bypass;
-    }
+    # Ensure jumps exist
+    if ! iptables -t mangle -C POSTROUTING -j ZAPRET_POST 2>/dev/null; then
+        iptables -t mangle -I POSTROUTING -j ZAPRET_POST
+    fi
+    if ! iptables -t mangle -C PREROUTING -j ZAPRET_PRE 2>/dev/null; then
+        iptables -t mangle -I PREROUTING -j ZAPRET_PRE
+    fi
+    if ! ip6tables -t mangle -C POSTROUTING -j ZAPRET_POST 2>/dev/null; then
+        ip6tables -t mangle -I POSTROUTING -j ZAPRET_POST
+    fi
+    if ! ip6tables -t mangle -C PREROUTING -j ZAPRET_PRE 2>/dev/null; then
+        ip6tables -t mangle -I PREROUTING -j ZAPRET_PRE
+    fi
+}
 
-    iptMultiPort() {
-        for current_port in $2; do
-            if [[ $current_port == *-* ]]; then
-                for i in $(seq ${current_port%-*} ${current_port#*-}); do 
-                    iptAdd "$1" "$i"; 
-                done
-            else 
-                iptAdd "$1" "$current_port"; 
-            fi
+remove_chains() {
+    # Remove jumps
+    iptables -t mangle -D POSTROUTING -j ZAPRET_POST 2>/dev/null
+    iptables -t mangle -D PREROUTING -j ZAPRET_PRE 2>/dev/null
+    ip6tables -t mangle -D POSTROUTING -j ZAPRET_POST 2>/dev/null
+    ip6tables -t mangle -D PREROUTING -j ZAPRET_PRE 2>/dev/null
+
+    # Flush and delete chains
+    iptables -t mangle -F ZAPRET_POST 2>/dev/null
+    iptables -t mangle -F ZAPRET_PRE 2>/dev/null
+    iptables -t mangle -X ZAPRET_POST 2>/dev/null
+    iptables -t mangle -X ZAPRET_PRE 2>/dev/null
+
+    ip6tables -t mangle -F ZAPRET_POST 2>/dev/null
+    ip6tables -t mangle -F ZAPRET_PRE 2>/dev/null
+    ip6tables -t mangle -X ZAPRET_POST 2>/dev/null
+    ip6tables -t mangle -X ZAPRET_PRE 2>/dev/null
+}
+
+legacy_cleanup() {
+    # Removes rules added by the old version of the script directly to PREROUTING/POSTROUTING
+    # Searches for rules targeting NFQUEUE num 200
+    
+    # Helper to list and delete
+    clean_table() {
+        local cmd=$1 # iptables or ip6tables
+        local chain=$2
+        $cmd -t mangle -S $chain | grep "NFQUEUE" | grep "200" | sed 's/^-A/-D/' | while read rule; do
+            $cmd -t mangle $rule 2>/dev/null
         done
     }
 
-    tcp_ports="$(echo $args | grep -oE 'filter-tcp=[0-9,-]+' | sed -e 's/.*=//g' -e 's/,/\n/g' -e 's/ /,/g' | sort -un)";
-    udp_ports="$(echo $args | grep -oE 'filter-udp=[0-9,-]+' | sed -e 's/.*=//g' -e 's/,/\n/g' -e 's/ /,/g' | sort -un)";
-    iptMultiPort "tcp" "$tcp_ports";
-    iptMultiPort "udp" "$udp_ports";
+    clean_table "iptables" "PREROUTING"
+    clean_table "iptables" "POSTROUTING"
+    clean_table "ip6tables" "PREROUTING"
+    clean_table "ip6tables" "POSTROUTING"
+}
 
-    nfqws --uid=0:0 --qnum=200 $args > /dev/null & 
-    echo "zapret service started!"; return 0; fi
+add_fw_rule() {
+    local proto=$1
+    local port=$2
+    local support=$3
 
-if [ "$1" == "stop" ]; then
-    iptables -t mangle -F PREROUTING; iptables -t mangle -F POSTROUTING;
-    ip6tables -t mangle -F PREROUTING; ip6tables -t mangle -F POSTROUTING;
-    kill "$(pidof nfqws)";
-    echo "zapret service stopped!"; return 0;
-fi;
+    local cbOrig="-m connbytes --connbytes-dir=original --connbytes-mode=packets --connbytes 1:12 -m mark ! --mark 0x40000000/0x40000000"
+    local cbReply="-m connbytes --connbytes-dir=reply --connbytes-mode=packets --connbytes 1:6 -m mark ! --mark 0x40000000/0x40000000"
 
-if [ "$1" == "autostart-on" ]; then
-    touch /data/adb/zapret/autostart;
-    echo "Autostart enabled"
-fi;
+    if [[ "$support" == "3" ]]; then
+        cbOrig=""
+        cbReply=""
+    fi
 
-if [ "$1" == "autostart-off" ]; then
-    rm /data/adb/zapret/autostart;
-    echo "Autostart disabled"
-fi;
+    iptables -t mangle -A ZAPRET_POST -p $proto --dport $port $cbOrig -j NFQUEUE --queue-num 200 --queue-bypass
+    iptables -t mangle -A ZAPRET_PRE -p $proto --sport $port $cbReply -j NFQUEUE --queue-num 200 --queue-bypass
+    ip6tables -t mangle -A ZAPRET_POST -p $proto --dport $port $cbOrig -j NFQUEUE --queue-num 200 --queue-bypass
+    ip6tables -t mangle -A ZAPRET_PRE -p $proto --sport $port $cbReply -j NFQUEUE --queue-num 200 --queue-bypass
+}
 
-if [ -z "$1" ]; then
-    echo "zapret for Magisk. Source: https://github.com/bol-van/zapret. Build: https://github.com/ImMALWARE/zapret-magisk. Usage: zapret start, zapret stop, zapret autostart-on, zapret autostart-off.";
-fi;
+process_ports() {
+    local args="$1"
+    local support=$(check_iptables_support)
+
+    # Extract TCP ports
+    local tcp_ports=$(echo "$args" | grep -oE 'filter-tcp=[0-9,-]+' | sed -e 's/.*=//g' -e 's/,/\n/g' -e 's/ /,/g' | sort -un)
+    for ports in $tcp_ports; do
+        if [[ $ports == *-* ]]; then
+            for i in $(seq ${ports%-*} ${ports#*-}); do add_fw_rule "tcp" "$i" "$support"; done
+        else
+            add_fw_rule "tcp" "$ports" "$support"
+        fi
+    done
+
+    # Extract UDP ports
+    local udp_ports=$(echo "$args" | grep -oE 'filter-udp=[0-9,-]+' | sed -e 's/.*=//g' -e 's/,/\n/g' -e 's/ /,/g' | sort -un)
+    for ports in $udp_ports; do
+        if [[ $ports == *-* ]]; then
+            for i in $(seq ${ports%-*} ${ports#*-}); do add_fw_rule "udp" "$i" "$support"; done
+        else
+            add_fw_rule "udp" "$ports" "$support"
+        fi
+    done
+}
+
+start() {
+    if pidof nfqws > /dev/null; then
+        log "Zapret is already running."
+        return 0
+    fi
+
+    log "Starting zapret..."
+
+    # Parse config
+    local args=""
+    if [ -f "$CONFIG" ]; then
+        while IFS= read -r line; do
+            line="${line//\{hosts\}/"$AUTOHOSTS"}"
+            line="${line//\{ignore\}/"$IGNORE"}"
+            line="${line//\{youtube\}/"/etc/youtube.txt"}"
+            line="${line//\{quicgoogle\}/"/etc/quic_initial_www_google_com.bin"}"
+            line="${line//\{tlsgoogle\}/"/etc/tls_clienthello_www_google_com.bin"}"
+            
+            # Remove filter args for nfqws processing, but keep for iptables logic?
+            # The original script removed --wf-tcp... lines from args passed to nfqws, 
+            # but seemingly grep'd them from $args later.
+            # Wait, the original script:
+            # line="$(echo "$line" | sed -E 's/--wf-(tcp|udp)=[^ ]+//g')"
+            # args+=" $line"
+            # AND THEN: tcp_ports="$(echo $args | grep ...)"
+            # This means the original script REMOVED the port definitions from the args passed to nfqws,
+            # but TRIED to grep them from $args?
+            # If sed removed them, grep wouldn't find them in $args!
+            # CHECK: The original script grep searches for 'filter-tcp', NOT '--wf-tcp'.
+            # 'filter-tcp' is likely a parameter in config.txt meant for the script, not nfqws.
+            # nfqws uses --qnum, --dpi-desync, etc.
+            # So we proceed as is.
+            
+            line="$(echo "$line" | sed -E 's/--wf-(tcp|udp)=[^ ]+//g')"
+            line="$(echo "$line" | sed -E 's/  +/ /g' | sed -E 's/^ //;s/ $//')"
+            args+=" $line"
+        done < "$CONFIG"
+    else
+        log "Config not found."
+        exit 1
+    fi
+
+    # Apply system tuning
+    sysctl net.netfilter.nf_conntrack_tcp_be_liberal=1 > /dev/null 2>&1
+
+    # Setup Firewall
+    ensure_chains
+    process_ports "$args"
+
+    # Launch nfqws
+    # Using nohup and redirecting all IO to detach completely from the parent shell (WebUI fix)
+    nohup nfqws --uid=0:0 --qnum=200 $args > /dev/null 2>&1 &
+
+    # Verify start
+    sleep 1
+    if pidof nfqws > /dev/null; then
+        log "zapret service started!"
+    else
+        log "Failed to start nfqws!"
+        stop # cleanup
+        exit 1
+    fi
+}
+
+stop() {
+    remove_chains
+    legacy_cleanup
+    
+    local pids=$(pidof nfqws)
+    if [ -n "$pids" ]; then
+        kill $pids
+        log "zapret service stopped!"
+    else
+        log "zapret is not running."
+    fi
+}
+
+case "$1" in
+    start)
+        start
+        ;;
+    stop)
+        stop
+        ;;
+    restart)
+        stop
+        start
+        ;;
+    autostart-on)
+        touch "$ZAPRET_BASE/autostart"
+        log "Autostart enabled"
+        ;;
+    autostart-off)
+        rm -f "$ZAPRET_BASE/autostart"
+        log "Autostart disabled"
+        ;;
+    *)
+        # Check status if no arg
+        pidof "nfqws" > /dev/null && echo "zapret is running" || echo "zapret is not running"
+        echo "Usage: $0 {start|stop|restart|autostart-on|autostart-off}"
+        ;;
+esac
